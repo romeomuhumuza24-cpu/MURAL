@@ -97,7 +97,7 @@ body.ar #panel.open{display:grid}
 const $=s=>document.querySelector(s);
 const S={img:null,aspect:1,wcm:200,unit:1,cal:false,op:.6,mode:'color',grid:false,cell:50,lock:false,placed:false,calMode:false,pts:[],trace:false,prev:null};
 const cv=$('#cv'),cx=cv.getContext('2d',{willReadFrequently:true});
-let renderer,scene,camera,session,refSpace,hitSrc,reticle,art,spin,mesh,mat,tex,init=null,hit=null,dirty=false;
+let renderer,scene,camera,session,refSpace,hitSrc,reticle,art,spin,mesh,mat,tex,init=null,hit=null,dirty=false,anchor=null,pendA=false,dragging=false;
 const camPos=new THREE.Vector3(),camQ=new THREE.Quaternion(),M=new THREE.Matrix4();let fProj=1.2;
 const st=t=>{$('#st').textContent=t};
 const L=j=>j<26?String.fromCharCode(65+j):L(Math.floor(j/26)-1)+L(j%26);
@@ -172,14 +172,14 @@ async function startAR(){
  if(!navigator.xr){msg.textContent='WebXR isn’t available in this browser. Use Chrome on an Android phone.';return}
  try{
   initGL();
-  session=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['hit-test'],optionalFeatures:['dom-overlay'],domOverlay:{root:$('#app')}});
+  session=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['hit-test'],optionalFeatures:['dom-overlay','anchors'],domOverlay:{root:$('#app')}});
   renderer.xr.setReferenceSpaceType('local');
   await renderer.xr.setSession(session);
   refSpace=renderer.xr.getReferenceSpace();
   hitSrc=await session.requestHitTestSource({space:await session.requestReferenceSpace('viewer')});
   document.body.classList.add('ar');S.placed=false;S.calMode=false;art.visible=false;sync();
   st('Scan the wall slowly');
-  session.addEventListener('end',()=>{document.body.classList.remove('ar');$('#panel').classList.remove('open');renderer.setAnimationLoop(null);session=null;hitSrc=null});
+  session.addEventListener('end',()=>{document.body.classList.remove('ar');$('#panel').classList.remove('open');renderer.setAnimationLoop(null);session=null;hitSrc=null;anchor=null;pendA=false});
   renderer.setAnimationLoop(loop);
  }catch(err){let sup='unknown';try{sup=await navigator.xr.isSessionSupported('immersive-ar')}catch(e){sup='check failed'}msg.textContent='AR couldn’t start: '+(err.name||'error')+' – '+(err.message||'no details')+' | AR supported: '+sup+' | Inside a frame: '+(window.top!==window.self)+' | Secure page: '+window.isSecureContext}
 }
@@ -190,6 +190,11 @@ function loop(t,frame){
  const vp=frame.getViewerPose(refSpace);
  if(vp){const p=vp.transform.position,o=vp.transform.orientation;camPos.set(p.x,p.y,p.z);camQ.set(o.x,o.y,o.z,o.w);if(vp.views[0])fProj=vp.views[0].projectionMatrix[5]||1.2}
  hit=null;reticle.visible=false;
+ if(S.placed&&frame.createAnchor){
+  if(pendA){pendA=false;const old=anchor;anchor=null;const q=art.quaternion,p=art.position;
+   frame.createAnchor(new XRRigidTransform({x:p.x,y:p.y,z:p.z},{x:q.x,y:q.y,z:q.z,w:q.w}),refSpace).then(a=>{anchor=a;if(old)old.delete()}).catch(()=>{anchor=null})}
+  else if(anchor&&!dragging&&frame.trackedAnchors&&frame.trackedAnchors.has(anchor)){const ap=frame.getPose(anchor.anchorSpace,refSpace);if(ap){const o=ap.transform.position,r2=ap.transform.orientation;art.position.set(o.x,o.y,o.z);art.quaternion.set(r2.x,r2.y,r2.z,r2.w)}}
+ }
  const r=hitSrc?frame.getHitTestResults(hitSrc):[];
  if(r.length){
   const pose=r[0].getPose(refSpace);
@@ -212,7 +217,7 @@ function loop(t,frame){
  }
  if(S.calMode)st(S.pts.length?'Tap point B':'Tap point A');
  else if(!S.placed)st(hit?(hit.valid?'Tap to place on the wall':'Aim at a vertical wall'):'Scan the wall slowly');
- else if(S.lock)st('Locked');else st('Drag to move · pinch to resize · twist to rotate');
+ else if(S.lock)st(anchor?'Locked and anchored':'Locked');else st('Drag to move · pinch to resize · twist to rotate');
  renderer.render(scene,camera);
 }
 
@@ -220,7 +225,7 @@ function place(h){
  art.position.copy(h.p).addScaledVector(h.n,.002);
  art.quaternion.setFromRotationMatrix(M.makeBasis(h.x,h.y,h.n));
  spin.rotation.z=0;init={pos:art.position.clone(),q:art.quaternion.clone(),wcm:S.wcm};
- S.placed=true;art.visible=true;
+ S.placed=true;art.visible=true;pendA=true;
 }
 function tap(){
  if(!hit)return;
@@ -243,7 +248,7 @@ touch.addEventListener('touchmove',e=>{
   let da=i.a-ta;if(da>Math.PI)da-=2*Math.PI;if(da<-Math.PI)da+=2*Math.PI;
   spin.rotation.z-=da;updateSize();dirty=true;td=i.d;ta=i.a;
  }else if(e.touches.length===1){
-  const dx=i.x-tl.x,dy=i.y-tl.y;moved+=Math.abs(dx)+Math.abs(dy);
+  const dx=i.x-tl.x,dy=i.y-tl.y;moved+=Math.abs(dx)+Math.abs(dy);dragging=true;
   const mpp=2*camPos.distanceTo(art.position)/fProj/innerHeight;
   const rt=new THREE.Vector3(1,0,0).applyQuaternion(camQ).multiplyScalar(dx*mpp),up=new THREE.Vector3(0,1,0).applyQuaternion(camQ).multiplyScalar(-dy*mpp),w=rt.add(up);
   const ax=new THREE.Vector3(1,0,0).applyQuaternion(art.quaternion),ay=new THREE.Vector3(0,1,0).applyQuaternion(art.quaternion);
@@ -255,6 +260,7 @@ touch.addEventListener('touchend',e=>{
  e.preventDefault();
  if(e.touches.length===0){
   if(!pinched&&moved<12&&Date.now()-t0<450)tap();
+  if(dragging){dragging=false;pendA=true}
   if(dirty){dirty=false;sync();if(S.grid)draw()}
   tl=null;
  }
@@ -262,11 +268,11 @@ touch.addEventListener('touchend',e=>{
 
 $('#go').onclick=startAR;
 $('#b-exit').onclick=()=>session&&session.end();
-$('#b-move').onclick=()=>{S.placed=false;art.visible=false;S.calMode=false};
+$('#b-move').onclick=()=>{S.placed=false;art.visible=false;S.calMode=false;if(anchor){anchor.delete();anchor=null}pendA=false};
 $('#b-lock').onclick=()=>{S.lock=!S.lock;sync()};
 $('#b-grid').onclick=()=>{S.grid=!S.grid;draw();sync()};
 $('#b-meas').onclick=()=>$('#panel').classList.toggle('open');
-$('#b-reset').onclick=()=>{if(!init)return;art.position.copy(init.pos);art.quaternion.copy(init.q);spin.rotation.z=0;S.wcm=init.wcm;draw();sync()};
+$('#b-reset').onclick=()=>{if(!init)return;art.position.copy(init.pos);art.quaternion.copy(init.q);spin.rotation.z=0;S.wcm=init.wcm;pendA=true;draw();sync()};
 $('#b-trace').onclick=()=>{
  if(!S.trace){S.prev={lock:S.lock,op:S.op,mode:S.mode};S.trace=true;S.lock=true;S.op=.45;S.mode='outline'}
  else{S.trace=false;Object.assign(S,S.prev)}
