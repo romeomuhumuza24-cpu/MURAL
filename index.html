@@ -97,7 +97,7 @@ body.ar #panel.open{display:grid}
 const $=s=>document.querySelector(s);
 const S={img:null,aspect:1,wcm:200,unit:1,cal:false,op:.6,mode:'color',grid:false,cell:50,lock:false,placed:false,calMode:false,pts:[],trace:false,prev:null};
 const cv=$('#cv'),cx=cv.getContext('2d',{willReadFrequently:true});
-let renderer,scene,camera,session,refSpace,hitSrc,reticle,art,spin,mesh,mat,tex,init=null,hit=null,dirty=false,anchor=null,pendA=false,dragging=false;
+let renderer,scene,camera,session,refSpace,hitSrc,reticle,art,spin,mesh,mat,tex,init=null,hit=null,dirty=false,anchor=null,pendA=false,dragging=false,aoff=new THREE.Matrix4(),M2=new THREE.Matrix4(),sc=new THREE.Vector3();
 const camPos=new THREE.Vector3(),camQ=new THREE.Quaternion(),M=new THREE.Matrix4();let fProj=1.2;
 const st=t=>{$('#st').textContent=t};
 const L=j=>j<26?String.fromCharCode(65+j):L(Math.floor(j/26)-1)+L(j%26);
@@ -143,7 +143,7 @@ $('#file').addEventListener('change',e=>{
 function sync(){
  $('#wcm').value=Math.round(S.wcm);$('#cell').value=S.cell;$('#op').value=Math.round(S.op*100);$('#gridchk').checked=S.grid;
  document.querySelectorAll('#modes button').forEach(b=>b.classList.toggle('on',b.dataset.m===S.mode));
- $('#b-lock').classList.toggle('on',S.lock);$('#b-grid').classList.toggle('on',S.grid);$('#b-trace').classList.toggle('on',S.trace);
+ $('#b-lock').classList.toggle('on',S.lock);$('#b-lock').textContent=S.lock?'Unlock':'Lock';$('#b-grid').classList.toggle('on',S.grid);$('#b-trace').classList.toggle('on',S.trace);
  if(mat)mat.opacity=S.op;
 }
 $('#wcm').onchange=e=>{S.wcm=Math.min(5000,Math.max(10,+e.target.value||200));draw();sync()};
@@ -190,11 +190,6 @@ function loop(t,frame){
  const vp=frame.getViewerPose(refSpace);
  if(vp){const p=vp.transform.position,o=vp.transform.orientation;camPos.set(p.x,p.y,p.z);camQ.set(o.x,o.y,o.z,o.w);if(vp.views[0])fProj=vp.views[0].projectionMatrix[5]||1.2}
  hit=null;reticle.visible=false;
- if(S.placed&&frame.createAnchor){
-  if(pendA){pendA=false;const old=anchor;anchor=null;const q=art.quaternion,p=art.position;
-   frame.createAnchor(new XRRigidTransform({x:p.x,y:p.y,z:p.z},{x:q.x,y:q.y,z:q.z,w:q.w}),refSpace).then(a=>{anchor=a;if(old)old.delete()}).catch(()=>{anchor=null})}
-  else if(anchor&&!dragging&&frame.trackedAnchors&&frame.trackedAnchors.has(anchor)){const ap=frame.getPose(anchor.anchorSpace,refSpace);if(ap){const o=ap.transform.position,r2=ap.transform.orientation;art.position.set(o.x,o.y,o.z);art.quaternion.set(r2.x,r2.y,r2.z,r2.w)}}
- }
  const r=hitSrc?frame.getHitTestResults(hitSrc):[];
  if(r.length){
   const pose=r[0].getPose(refSpace);
@@ -206,7 +201,7 @@ function loop(t,frame){
    bx.crossVectors(UP,n);
    if(bx.lengthSq()>1e-4){
     bx.normalize();by.crossVectors(n,bx);
-    hit={p,n,x:bx.clone(),y:by.clone(),valid};
+    hit={p,n,x:bx.clone(),y:by.clone(),valid,hm:M.clone()};
     if(!S.placed||S.calMode){
      reticle.visible=true;reticle.position.copy(p).addScaledVector(n,.003);
      reticle.quaternion.setFromRotationMatrix(M.makeBasis(bx,by,n));
@@ -215,9 +210,20 @@ function loop(t,frame){
    }
   }
  }
+ if(S.placed&&frame.createAnchor){
+  if(pendA){
+   const old=anchor,mode=pendA,p=art.position.clone(),q=art.quaternion.clone(),am=new THREE.Matrix4().compose(p,q,new THREE.Vector3(1,1,1));
+   pendA=false;anchor=null;
+   const free=()=>frame.createAnchor(new XRRigidTransform({x:p.x,y:p.y,z:p.z},{x:q.x,y:q.y,z:q.z,w:q.w}),refSpace).then(a=>{aoff.identity();anchor=a;if(old)old.delete()}).catch(()=>{anchor=null});
+   if(mode==='plane'&&hit&&r.length&&r[0].createAnchor){const off=hit.hm.clone().invert().multiply(am);r[0].createAnchor().then(a=>{aoff.copy(off);anchor=a;if(old)old.delete()}).catch(free)}else free();
+  }else if(anchor&&!dragging&&frame.trackedAnchors&&frame.trackedAnchors.has(anchor)){
+   const ap=frame.getPose(anchor.anchorSpace,refSpace);
+   if(ap)M2.fromArray(ap.transform.matrix).multiply(aoff).decompose(art.position,art.quaternion,sc);
+  }
+ }
  if(S.calMode)st(S.pts.length?'Tap point B':'Tap point A');
  else if(!S.placed)st(hit?(hit.valid?'Tap to place on the wall':'Aim at a vertical wall'):'Scan the wall slowly');
- else if(S.lock)st(anchor?'Locked and anchored':'Locked');else st('Drag to move · pinch to resize · twist to rotate');
+ else if(S.lock)st(anchor?'Locked to wall · tap Unlock to adjust':'Locked · tap Unlock to adjust');else st('Drag to move · pinch to resize · twist to rotate');
  renderer.render(scene,camera);
 }
 
@@ -225,7 +231,7 @@ function place(h){
  art.position.copy(h.p).addScaledVector(h.n,.002);
  art.quaternion.setFromRotationMatrix(M.makeBasis(h.x,h.y,h.n));
  spin.rotation.z=0;init={pos:art.position.clone(),q:art.quaternion.clone(),wcm:S.wcm};
- S.placed=true;art.visible=true;pendA=true;
+ S.placed=true;art.visible=true;pendA='plane';S.lock=true;sync();
 }
 function tap(){
  if(!hit)return;
@@ -268,7 +274,7 @@ touch.addEventListener('touchend',e=>{
 
 $('#go').onclick=startAR;
 $('#b-exit').onclick=()=>session&&session.end();
-$('#b-move').onclick=()=>{S.placed=false;art.visible=false;S.calMode=false;if(anchor){anchor.delete();anchor=null}pendA=false};
+$('#b-move').onclick=()=>{S.placed=false;art.visible=false;S.calMode=false;if(anchor){anchor.delete();anchor=null}pendA=false;S.lock=false;sync()};
 $('#b-lock').onclick=()=>{S.lock=!S.lock;sync()};
 $('#b-grid').onclick=()=>{S.grid=!S.grid;draw();sync()};
 $('#b-meas').onclick=()=>$('#panel').classList.toggle('open');
